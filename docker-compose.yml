@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: stockwatcher-db
+    environment:
+      POSTGRES_USER: stockwatcher
+      POSTGRES_PASSWORD: stockwatcher_password
+      POSTGRES_DB: stockwatcher
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockwatcher"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stockwatcher-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: stockwatcher-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stockwatcher-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: stockwatcher-backend
+    environment:
+      DATABASE_URL: postgresql://stockwatcher:stockwatcher_password@postgres:5432/stockwatcher
+      REDIS_URL: redis://redis:6379/0
+      FLASK_ENV: production
+      FLASK_APP: app.py
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - stockwatcher-network
+    command: gunicorn --bind 0.0.0.0:8000 --workers 4 app:app
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: stockwatcher-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - stockwatcher-network
+    command: npm start
+
+  nginx:
+    image: nginx:alpine
+    container_name: stockwatcher-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - stockwatcher-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  stockwatcher-network:
+    driver: bridge
